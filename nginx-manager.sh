@@ -425,53 +425,45 @@ disable_site() {
 # ────────────────────────────────────────────────────────
 
 generate_site_config() {
-  local domain="$1" port="$2" static_dir="$3"
+  local domain="$1" port="$2" static_dir="$3" media_dir="$4"
+
+  echo "server {"
+  echo "    listen 80;"
+  echo "    server_name ${domain} www.${domain};"
+  echo ""
 
   if [[ -n "$static_dir" ]]; then
-    cat <<EOF
-server {
-    listen 80;
-    server_name ${domain} www.${domain};
-
-    location /static/ {
-        alias ${static_dir}/;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-    }
-
-    location / {
-        proxy_pass         http://127.0.0.1:${port};
-        proxy_http_version 1.1;
-        proxy_set_header   Upgrade           \$http_upgrade;
-        proxy_set_header   Connection        'upgrade';
-        proxy_set_header   Host              \$host;
-        proxy_set_header   X-Real-IP         \$remote_addr;
-        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto \$scheme;
-        proxy_cache_bypass \$http_upgrade;
-    }
-}
-EOF
-  else
-    cat <<EOF
-server {
-    listen 80;
-    server_name ${domain} www.${domain};
-
-    location / {
-        proxy_pass         http://127.0.0.1:${port};
-        proxy_http_version 1.1;
-        proxy_set_header   Upgrade           \$http_upgrade;
-        proxy_set_header   Connection        'upgrade';
-        proxy_set_header   Host              \$host;
-        proxy_set_header   X-Real-IP         \$remote_addr;
-        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto \$scheme;
-        proxy_cache_bypass \$http_upgrade;
-    }
-}
-EOF
+    echo "    location /static/ {"
+    echo "        alias ${static_dir}/;"
+    echo "        expires 30d;"
+    echo "        add_header Cache-Control \"public, immutable\";"
+    echo "    }"
+    echo ""
   fi
+
+  if [[ -n "$media_dir" ]]; then
+    echo "    location /media/ {"
+    echo "        alias ${media_dir}/;"
+    echo "        expires 7d;"
+    echo "        add_header Cache-Control \"public, max-age=604800\";"
+    echo "    }"
+    echo ""
+  fi
+
+  cat <<EOF
+    location / {
+        proxy_pass         http://127.0.0.1:${port};
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        'upgrade';
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+EOF
 }
 
 # ────────────────────────────────────────────────────────
@@ -493,13 +485,19 @@ add_site() {
   fi
 
   echo
-  echo -e "  ${CYAN}Static/media directory${RESET}"
-  echo -e "  ${DIM}Leave empty if your app serves its own static files${RESET}"
+  echo -e "  ${CYAN}Static directory${RESET} ${DIM}(served at /static/, e.g. CSS/JS)${RESET}"
   read -rp "  Path (or Enter to skip): " static_dir
-
   if [[ -n "$static_dir" && ! -d "$static_dir" ]]; then
     echo -e "  ${YELLOW}⚠  Directory does not exist — creating it...${RESET}"
     mkdir -p "$static_dir" && echo -e "  ${GREEN}✓ Created $static_dir${RESET}"
+  fi
+
+  echo
+  echo -e "  ${CYAN}Media directory${RESET} ${DIM}(served at /media/, e.g. uploads)${RESET}"
+  read -rp "  Path (or Enter to skip): " media_dir
+  if [[ -n "$media_dir" && ! -d "$media_dir" ]]; then
+    echo -e "  ${YELLOW}⚠  Directory does not exist — creating it...${RESET}"
+    mkdir -p "$media_dir" && echo -e "  ${GREEN}✓ Created $media_dir${RESET}"
   fi
 
   local config_file="$SITES_AVAILABLE/$domain"
@@ -509,7 +507,7 @@ add_site() {
     confirm "Overwrite?" || { pause; return; }
   fi
 
-  generate_site_config "$domain" "$port" "$static_dir" > "$config_file"
+  generate_site_config "$domain" "$port" "$static_dir" "$media_dir" > "$config_file"
   echo -e "\n  ${GREEN}✓ Config written: $config_file${RESET}"
 
   echo
