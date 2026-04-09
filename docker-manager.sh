@@ -16,6 +16,9 @@ RESET='\033[0m'
 #   docker-manager update
 SELF_UPDATE_URL="${DOCKER_MANAGER_UPDATE_URL:-https://raw.githubusercontent.com/DmitryAce/scripts/main/docker-manager.sh}"
 
+ALIAS_NM_DROPIN="/etc/profile.d/nginx-manager-alias-nm.sh"
+ALIAS_DM_DROPIN="/etc/profile.d/docker-manager-alias-dm.sh"
+
 # ────────────────────────────────────────────────────────
 #  UTILITIES
 # ────────────────────────────────────────────────────────
@@ -549,6 +552,155 @@ prune_menu() {
 }
 
 # ────────────────────────────────────────────────────────
+#  SETTINGS (aliases nm / dm)
+# ────────────────────────────────────────────────────────
+
+resolve_nginx_manager_bin() {
+  command -v nginx-manager 2>/dev/null || echo "/usr/local/bin/nginx-manager"
+}
+
+resolve_docker_manager_bin() {
+  command -v docker-manager 2>/dev/null || echo "/usr/local/bin/docker-manager"
+}
+
+alias_nm_enabled() { [[ -f "$ALIAS_NM_DROPIN" ]]; }
+alias_dm_enabled() { [[ -f "$ALIAS_DM_DROPIN" ]]; }
+
+warn_path_conflict_shortcmd() {
+  local short="$1"
+  local p
+  p=$(command -v -- "$short" 2>/dev/null || true)
+  [[ -z "$p" ]] && return 0
+  case "$short" in
+    nm)
+      [[ "$p" == *nginx-manager* ]] && return 0
+      echo -e "  ${YELLOW}⚠  В PATH уже есть команда «nm»:${RESET} ${BOLD}$p${RESET}"
+      echo -e "  ${DIM}  Обычно это binutils. После входа в bash алиас перекроет имя.${RESET}"
+      ;;
+    dm)
+      [[ "$p" == *docker-manager* ]] && return 0
+      echo -e "  ${YELLOW}⚠  В системе уже есть «dm»:${RESET} ${BOLD}$p${RESET}"
+      echo -e "  ${DIM}  Интерактивный алиас в bash может перекрыть это имя.${RESET}"
+      ;;
+  esac
+}
+
+warn_other_profiled_alias() {
+  local short="$1"
+  local f b
+  for f in /etc/profile.d/*.sh; do
+    [[ -f "$f" ]] || continue
+    b=$(basename "$f")
+    [[ "$b" == "nginx-manager-alias-nm.sh" || "$b" == "docker-manager-alias-dm.sh" ]] && continue
+    if grep -qE "^[[:space:]]*alias[[:space:]]+${short}=" "$f" 2>/dev/null; then
+      echo -e "  ${YELLOW}⚠  Обнаружен alias ${short} ещё в:${RESET} $f"
+    fi
+  done
+}
+
+_write_alias_dropin() {
+  local dest="$1" name="$2" bin="$3"
+  local tmp
+  tmp=$(mktemp) || return 1
+  {
+    echo "# Managed by nginx-manager / docker-manager (Settings) — do not edit by hand"
+    echo "# Подхват: новый login-shell или: source $dest"
+    printf 'alias %s=%q\n' "$name" "$bin"
+  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  if [[ $EUID -eq 0 ]]; then
+    install -m 644 "$tmp" "$dest" || { rm -f "$tmp"; echo -e "  ${RED}✗ Не удалось записать $dest${RESET}"; return 1; }
+  else
+    sudo install -m 644 "$tmp" "$dest" || { rm -f "$tmp"; echo -e "  ${RED}✗ sudo / запись не удалась — попробуйте ${BOLD}sudo docker-manager${RESET}"; return 1; }
+  fi
+  rm -f "$tmp"
+  return 0
+}
+
+_remove_alias_dropin() {
+  local dest="$1"
+  if [[ $EUID -eq 0 ]]; then
+    rm -f "$dest" || { echo -e "  ${RED}✗ Не удалось удалить $dest${RESET}"; return 1; }
+  else
+    sudo rm -f "$dest" || { echo -e "  ${RED}✗ Не удалось удалить (sudo?)${RESET}"; return 1; }
+  fi
+}
+
+toggle_nm_alias() {
+  if alias_nm_enabled; then
+    if confirm "Выключить алиас nm (удалить $ALIAS_NM_DROPIN)?"; then
+      _remove_alias_dropin "$ALIAS_NM_DROPIN" && echo -e "  ${GREEN}✓ nm выключен${RESET}"
+    fi
+  else
+    warn_path_conflict_shortcmd nm
+    warn_other_profiled_alias nm
+    local bin
+    bin=$(resolve_nginx_manager_bin)
+    [[ ! -f "$bin" ]] && echo -e "  ${YELLOW}⚠  Нет файла: $bin${RESET}"
+    echo -e "  ${DIM}Будет: nm → $bin${RESET}"
+    if confirm "Включить алиас nm?"; then
+      if _write_alias_dropin "$ALIAS_NM_DROPIN" "nm" "$bin"; then
+        echo -e "  ${GREEN}✓ nm включён${RESET}"
+      fi
+    fi
+  fi
+}
+
+toggle_dm_alias() {
+  if alias_dm_enabled; then
+    if confirm "Выключить алиас dm (удалить $ALIAS_DM_DROPIN)?"; then
+      _remove_alias_dropin "$ALIAS_DM_DROPIN" && echo -e "  ${GREEN}✓ dm выключен${RESET}"
+    fi
+  else
+    warn_path_conflict_shortcmd dm
+    warn_other_profiled_alias dm
+    local bin
+    bin=$(resolve_docker_manager_bin)
+    [[ ! -f "$bin" ]] && echo -e "  ${YELLOW}⚠  Нет файла: $bin${RESET}"
+    echo -e "  ${DIM}Будет: dm → $bin${RESET}"
+    if confirm "Включить алиас dm?"; then
+      if _write_alias_dropin "$ALIAS_DM_DROPIN" "dm" "$bin"; then
+        echo -e "  ${GREEN}✓ dm включён${RESET}"
+      fi
+    fi
+  fi
+}
+
+settings_menu() {
+  while true; do
+    print_header
+    echo -e "  ${BOLD}Settings${RESET}"
+    echo -e "  ${DIM}────────────────────────────────────────────────${RESET}"
+    echo -e "  ${DIM}Короткие алиасы в bash (файлы в /etc/profile.d).${RESET}"
+    echo -e "  ${DIM}Запись в /etc без root:${RESET} sudo спросит пароль."
+    echo -e "  ${DIM}Новая сессия bash или:${RESET}"
+    echo -e "  ${DIM}  source $ALIAS_NM_DROPIN${RESET}"
+    echo -e "  ${DIM}  source $ALIAS_DM_DROPIN${RESET}"
+    echo
+    local nm_st dm_st
+    if alias_nm_enabled; then nm_st="${GREEN}${BOLD}● активен${RESET}"; else nm_st="${RED}○ выключен${RESET}"; fi
+    if alias_dm_enabled; then dm_st="${GREEN}${BOLD}● активен${RESET}"; else dm_st="${RED}○ выключен${RESET}"; fi
+    echo -e "  nm → nginx-manager     $(echo -e "$nm_st")"
+    echo -e "    ${DIM}$ALIAS_NM_DROPIN${RESET}"
+    echo
+    echo -e "  dm → docker-manager    $(echo -e "$dm_st")"
+    echo -e "    ${DIM}$ALIAS_DM_DROPIN${RESET}"
+    echo
+    echo -e "  ${CYAN}[1]${RESET}  Переключить  nm"
+    echo -e "  ${CYAN}[2]${RESET}  Переключить  dm"
+    echo -e "  ${DIM}[b]${RESET}  Назад в главное меню"
+    echo
+
+    read -rp "  Choose: " sopt
+    case "$sopt" in
+      1) toggle_nm_alias; pause ;;
+      2) toggle_dm_alias; pause ;;
+      b|B) return ;;
+      *) ;;
+    esac
+  done
+}
+
+# ────────────────────────────────────────────────────────
 #  MAIN MENU
 # ────────────────────────────────────────────────────────
 
@@ -567,6 +719,7 @@ main_menu() {
     echo -e "  ${CYAN}[9]${RESET}  System usage  ${DIM}(df, version, stats)${RESET}"
     echo -e "  ${CYAN}[0]${RESET}  Prune unused  ${DIM}(careful)${RESET}"
     echo -e "  ${CYAN}[e]${RESET}  Shell in container  ${DIM}(docker exec bash/sh)${RESET}"
+    echo -e "  ${CYAN}[s]${RESET}  Settings  ${DIM}(алиасы nm / dm)${RESET}"
     echo
     echo -e "  ${DIM}[q]${RESET}  Quit"
     echo
@@ -584,6 +737,7 @@ main_menu() {
       9) system_summary ;;
       0) prune_menu ;;
       e|E) exec_into_container ;;
+      s|S) settings_menu ;;
       q|Q) echo -e "\n  ${DIM}Bye!${RESET}\n"; exit 0 ;;
       *) echo -e "  ${RED}Unknown option${RESET}"; sleep 1 ;;
     esac
