@@ -23,6 +23,8 @@ SELF_UPDATE_URL="${NGINX_MANAGER_UPDATE_URL:-https://raw.githubusercontent.com/D
 # Short aliases nm / dm → drop-ins in profile.d (Settings menu)
 ALIAS_NM_DROPIN="/etc/profile.d/nginx-manager-alias-nm.sh"
 ALIAS_DM_DROPIN="/etc/profile.d/docker-manager-alias-dm.sh"
+# Одна строка-маркер для grep (хук в интерактивный bash)
+BASH_ALIASES_HOOK_MARKER='# >>> devops-managers-aliases (nginx/docker Settings)'
 
 # ────────────────────────────────────────────────────────
 #  UTILITIES
@@ -881,7 +883,7 @@ _write_alias_dropin() {
   tmp=$(mktemp) || return 1
   {
     echo "# Managed by nginx-manager / docker-manager (Settings) — do not edit by hand"
-    echo "# Подхват: новый login-shell или: source $dest"
+    echo "# Подхват: login-shell, source $dest, или хук в /etc/bash.bashrc (интерактивный bash)"
     printf 'alias %s=%q\n' "$name" "$bin"
   } > "$tmp" || { rm -f "$tmp"; return 1; }
   if [[ $EUID -eq 0 ]]; then
@@ -902,6 +904,28 @@ _remove_alias_dropin() {
   fi
 }
 
+# Интерактивный bash часто не читает /etc/profile.d (non-login). Дописываем блок в bash.bashrc / bashrc.
+# Возврат 0 — блок только что добавлен; 1 — уже был или нет подходящего файла.
+_ensure_interactive_bash_hook() {
+  local target=""
+  [[ -f /etc/bash.bashrc ]] && target=/etc/bash.bashrc
+  [[ -z "$target" && -f /etc/bashrc ]] && target=/etc/bashrc
+  [[ -z "$target" ]] && return 1
+
+  if grep -qF "$BASH_ALIASES_HOOK_MARKER" "$target" 2>/dev/null; then
+    return 1
+  fi
+
+  local block=$'\n'"$BASH_ALIASES_HOOK_MARKER"$'\n'"[[ -r $ALIAS_NM_DROPIN ]] && . $ALIAS_NM_DROPIN"$'\n'"[[ -r $ALIAS_DM_DROPIN ]] && . $ALIAS_DM_DROPIN"$'\n'"# <<< devops-managers-aliases"$'\n'
+
+  if [[ $EUID -eq 0 ]]; then
+    printf '%s' "$block" >> "$target" || return 1
+  else
+    printf '%s' "$block" | sudo tee -a "$target" > /dev/null || return 1
+  fi
+  return 0
+}
+
 toggle_nm_alias() {
   if alias_nm_enabled; then
     if confirm "Выключить алиас nm (удалить $ALIAS_NM_DROPIN)?"; then
@@ -917,6 +941,10 @@ toggle_nm_alias() {
     if confirm "Включить алиас nm?"; then
       if _write_alias_dropin "$ALIAS_NM_DROPIN" "nm" "$bin"; then
         echo -e "  ${GREEN}✓ nm включён${RESET}"
+        if _ensure_interactive_bash_hook; then
+          echo -e "  ${GREEN}✓ Добавлен хук в /etc/bash.bashrc или /etc/bashrc (интерактивный bash)${RESET}"
+        fi
+        echo -e "  ${DIM}В этой консоли сейчас: ${BOLD}exec bash${RESET}${DIM} или ${BOLD}source $ALIAS_NM_DROPIN${RESET}"
       fi
     fi
   fi
@@ -937,21 +965,35 @@ toggle_dm_alias() {
     if confirm "Включить алиас dm?"; then
       if _write_alias_dropin "$ALIAS_DM_DROPIN" "dm" "$bin"; then
         echo -e "  ${GREEN}✓ dm включён${RESET}"
+        if _ensure_interactive_bash_hook; then
+          echo -e "  ${GREEN}✓ Добавлен хук в /etc/bash.bashrc или /etc/bashrc (интерактивный bash)${RESET}"
+        fi
+        echo -e "  ${DIM}В этой консоли: ${BOLD}exec bash${RESET}${DIM} или ${BOLD}source $ALIAS_DM_DROPIN${RESET}"
       fi
     fi
   fi
 }
 
 settings_menu() {
+  local _bash_hook_just_added=0
+  if alias_nm_enabled || alias_dm_enabled; then
+    if _ensure_interactive_bash_hook; then
+      _bash_hook_just_added=1
+    fi
+  fi
+
   while true; do
     print_header
     echo -e "  ${BOLD}Settings${RESET}"
     echo -e "  ${DIM}────────────────────────────────────────────────${RESET}"
-    echo -e "  ${DIM}Короткие алиасы в bash (файлы в /etc/profile.d).${RESET}"
-    echo -e "  ${DIM}nginx-manager идёт от root — drop-in пишется сразу.${RESET}"
-    echo -e "  ${DIM}Новая сессия bash или:${RESET}"
-    echo -e "  ${DIM}  source $ALIAS_NM_DROPIN${RESET}"
-    echo -e "  ${DIM}  source $ALIAS_DM_DROPIN${RESET}"
+    if [[ $_bash_hook_just_added -eq 1 ]]; then
+      echo -e "  ${GREEN}✓ В системный bashrc добавлен блок подхвата nm/dm.${RESET}"
+      echo -e "  ${YELLOW}Текущая сессия без алиасов:${RESET} ${BOLD}exec bash${RESET} или откройте новый SSH.\n"
+      _bash_hook_just_added=0
+    fi
+    echo -e "  ${DIM}Файлы в /etc/profile.d + хук в bash.bashrc (интерактивный non-login bash).${RESET}"
+    echo -e "  ${DIM}nginx-manager от root — без sudo.${RESET}"
+    echo -e "  ${DIM}Сразу в этой консоли:${RESET} ${BOLD}source $ALIAS_NM_DROPIN${RESET} ${DIM}и${RESET} ${BOLD}source $ALIAS_DM_DROPIN${RESET}"
     echo
     local nm_st dm_st
     if alias_nm_enabled; then nm_st="${GREEN}${BOLD}● активен${RESET}"; else nm_st="${RED}○ выключен${RESET}"; fi
@@ -964,6 +1006,7 @@ settings_menu() {
     echo
     echo -e "  ${CYAN}[1]${RESET}  Переключить  nm"
     echo -e "  ${CYAN}[2]${RESET}  Переключить  dm"
+    echo -e "  ${CYAN}[3]${RESET}  Установить хук в bashrc  ${DIM}(если nm/dm не видны в консоли)${RESET}"
     echo -e "  ${DIM}[b]${RESET}  Назад в главное меню"
     echo
 
@@ -971,6 +1014,18 @@ settings_menu() {
     case "$sopt" in
       1) toggle_nm_alias; pause ;;
       2) toggle_dm_alias; pause ;;
+      3)
+        if alias_nm_enabled || alias_dm_enabled; then
+          if _ensure_interactive_bash_hook; then
+            echo -e "  ${GREEN}✓ Хук добавлен. Затем: exec bash${RESET}"
+          else
+            echo -e "  ${DIM}Хук уже установлен или нет /etc/bash.bashrc и /etc/bashrc${RESET}"
+          fi
+        else
+          echo -e "  ${YELLOW}Сначала включите nm или dm${RESET}"
+        fi
+        pause
+        ;;
       b|B) return ;;
       *) ;;
     esac
