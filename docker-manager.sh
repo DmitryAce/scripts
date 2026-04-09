@@ -372,6 +372,40 @@ inspect_container() {
 }
 
 # ────────────────────────────────────────────────────────
+#  EXEC SHELL (docker exec)
+# ────────────────────────────────────────────────────────
+
+exec_into_container() {
+  print_header
+  echo -e "  ${BOLD}Shell inside container${RESET}  ${DIM}(docker exec -it)${RESET}"
+  echo -e "  ${DIM}Только запущенные контейнеры · сначала пробуем bash, иначе sh${RESET}"
+  echo -e "  ${YELLOW}Выйти из контейнера:${RESET} ${BOLD}exit${RESET} или Ctrl+D\n"
+
+  pick_container running || { pause; return; }
+
+  local c="$SELECTED_NAME"
+  echo
+  if docker exec "$c" bash -c 'true' 2>/dev/null; then
+    echo -e "  ${DIM}▸ docker exec -it $c bash${RESET}\n"
+    docker exec -it "$c" bash
+  elif docker exec "$c" /bin/bash -c 'true' 2>/dev/null; then
+    echo -e "  ${DIM}▸ docker exec -it $c /bin/bash${RESET}\n"
+    docker exec -it "$c" /bin/bash
+  elif docker exec "$c" sh -c 'true' 2>/dev/null; then
+    echo -e "  ${DIM}▸ docker exec -it $c sh${RESET}\n"
+    docker exec -it "$c" sh
+  elif docker exec "$c" /bin/sh -c 'true' 2>/dev/null; then
+    echo -e "  ${DIM}▸ docker exec -it $c /bin/sh${RESET}\n"
+    docker exec -it "$c" /bin/sh
+  else
+    echo -e "  ${RED}✗ Не удалось запустить shell (нет bash/sh в контейнере или контейнер не running)${RESET}"
+  fi
+
+  echo
+  pause
+}
+
+# ────────────────────────────────────────────────────────
 #  IMAGES
 # ────────────────────────────────────────────────────────
 
@@ -447,6 +481,19 @@ system_summary() {
   echo
   echo -e "  ${DIM}▸ docker system df${RESET}\n"
   docker system df 2>&1 | sed 's/^/    /'
+
+  echo
+  echo -e "  ${BOLD}Resource usage (running containers)${RESET}"
+  echo -e "  ${DIM}▸ docker stats --no-stream${RESET} — ${DIM}CPU %, MEM usage/limit, MEM %, NET I/O, BLOCK I/O, PIDs (стандартная таблица Docker)${RESET}\n"
+  docker stats --no-stream 2>&1 | sed 's/^/    /'
+
+  echo
+  if confirm "Живые обновляющиеся stats (как docker stats, Ctrl+C — стоп)?"; then
+    clear
+    echo -e "  ${YELLOW}Ctrl+C${RESET} ${DIM}— выйти из live stats и вернуться${RESET}\n"
+    docker stats
+  fi
+
   pause
 }
 
@@ -514,8 +561,9 @@ main_menu() {
     echo -e "  ${CYAN}[6]${RESET}  Inspect container"
     echo -e "  ${CYAN}[7]${RESET}  Images"
     echo -e "  ${CYAN}[8]${RESET}  Networks & volumes"
-    echo -e "  ${CYAN}[9]${RESET}  System usage  ${DIM}(df, version)${RESET}"
+    echo -e "  ${CYAN}[9]${RESET}  System usage  ${DIM}(df, version, stats)${RESET}"
     echo -e "  ${CYAN}[0]${RESET}  Prune unused  ${DIM}(careful)${RESET}"
+    echo -e "  ${CYAN}[e]${RESET}  Shell in container  ${DIM}(docker exec bash/sh)${RESET}"
     echo
     echo -e "  ${DIM}[q]${RESET}  Quit"
     echo
@@ -532,6 +580,7 @@ main_menu() {
       8) storage_menu ;;
       9) system_summary ;;
       0) prune_menu ;;
+      e|E) exec_into_container ;;
       q|Q) echo -e "\n  ${DIM}Bye!${RESET}\n"; exit 0 ;;
       *) echo -e "  ${RED}Unknown option${RESET}"; sleep 1 ;;
     esac
