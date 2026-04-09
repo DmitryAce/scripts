@@ -905,23 +905,24 @@ _remove_alias_dropin() {
 }
 
 # Интерактивный bash часто не читает /etc/profile.d (non-login). Дописываем блок в bash.bashrc / bashrc.
-# Возврат 0 — блок только что добавлен; 1 — уже был или нет подходящего файла.
+# 0 — блок только что добавлен; 1 — маркер уже есть в bash.bashrc или bashrc; 2 — нет обоих файлов; 3 — ошибка записи.
 _ensure_interactive_bash_hook() {
   local target=""
   [[ -f /etc/bash.bashrc ]] && target=/etc/bash.bashrc
   [[ -z "$target" && -f /etc/bashrc ]] && target=/etc/bashrc
-  [[ -z "$target" ]] && return 1
+  [[ -z "$target" ]] && return 2
 
-  if grep -qF "$BASH_ALIASES_HOOK_MARKER" "$target" 2>/dev/null; then
+  if grep -qF "$BASH_ALIASES_HOOK_MARKER" /etc/bash.bashrc 2>/dev/null || \
+     grep -qF "$BASH_ALIASES_HOOK_MARKER" /etc/bashrc 2>/dev/null; then
     return 1
   fi
 
   local block=$'\n'"$BASH_ALIASES_HOOK_MARKER"$'\n'"[[ -r $ALIAS_NM_DROPIN ]] && . $ALIAS_NM_DROPIN"$'\n'"[[ -r $ALIAS_DM_DROPIN ]] && . $ALIAS_DM_DROPIN"$'\n'"# <<< devops-managers-aliases"$'\n'
 
   if [[ $EUID -eq 0 ]]; then
-    printf '%s' "$block" >> "$target" || return 1
+    printf '%s' "$block" >> "$target" || return 3
   else
-    printf '%s' "$block" | sudo tee -a "$target" > /dev/null || return 1
+    printf '%s' "$block" | sudo tee -a "$target" > /dev/null || return 3
   fi
   return 0
 }
@@ -1016,11 +1017,16 @@ settings_menu() {
       2) toggle_dm_alias; pause ;;
       3)
         if alias_nm_enabled || alias_dm_enabled; then
-          if _ensure_interactive_bash_hook; then
-            echo -e "  ${GREEN}✓ Хук добавлен. Затем: exec bash${RESET}"
-          else
-            echo -e "  ${DIM}Хук уже установлен или нет /etc/bash.bashrc и /etc/bashrc${RESET}"
-          fi
+          _ensure_interactive_bash_hook
+          case $? in
+            0) echo -e "  ${GREEN}✓ Хук дописан в bashrc. Дальше: ${BOLD}exec bash${RESET}${GREEN} или новый SSH.${RESET}" ;;
+            1)
+              echo -e "  ${GREEN}✓ Хук уже есть${RESET} ${DIM}(маркер devops-managers-aliases в /etc/bash.bashrc или /etc/bashrc)${RESET}"
+              echo -e "  ${DIM}Если nm/dm не срабатывают: вы в ${BOLD}bash${RESET}${DIM}? (${BOLD}echo \"\$0\"${RESET}${DIM}) Запустите ${BOLD}exec bash${RESET}${DIM} или ${BOLD}bash -l${RESET}${DIM}.${RESET}"
+              ;;
+            2) echo -e "  ${RED}✗ Нет файлов /etc/bash.bashrc и /etc/bashrc — хук некуда записать.${RESET}" ;;
+            3) echo -e "  ${RED}✗ Не удалось дописать bashrc (права / диск).${RESET}" ;;
+          esac
         else
           echo -e "  ${YELLOW}Сначала включите nm или dm${RESET}"
         fi
