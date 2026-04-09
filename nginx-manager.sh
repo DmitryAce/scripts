@@ -61,7 +61,7 @@ nginx_reload() {
     if systemctl reload nginx 2>&1; then
       echo -e "  ${GREEN}✓ Nginx reloaded${RESET}"
     else
-      echo -e "  ${RED}✗ Reload failed — try option [8] restart${RESET}"
+      echo -e "  ${RED}✗ Reload failed — try option [9] restart${RESET}"
     fi
   else
     echo -e "  ${RED}✗ Config test failed — nginx NOT reloaded${RESET}"
@@ -341,6 +341,130 @@ list_sites() {
   done
 
   pause
+}
+
+# ────────────────────────────────────────────────────────
+#  VIEW / EDIT SITE CONFIGS
+# ────────────────────────────────────────────────────────
+
+collect_site_config_names() {
+  local -n _arr=$1
+  _arr=()
+  local f
+  for f in "$SITES_AVAILABLE"/*; do
+    [[ -f "$f" ]] || continue
+    _arr+=("$(basename "$f")")
+  done
+  if [[ ${#_arr[@]} -eq 0 ]]; then
+    return 0
+  fi
+  local sorted=()
+  mapfile -t sorted < <(printf '%s\n' "${_arr[@]}" | sort -u)
+  _arr=("${sorted[@]}")
+}
+
+view_config_file() {
+  local path="$1"
+  echo
+  echo -e "  ${DIM}▸ $path${RESET} ${DIM}(q to quit pager)${RESET}\n"
+  if command -v less &>/dev/null; then
+    less -F -X "$path"
+  elif command -v more &>/dev/null; then
+    more "$path"
+  else
+    sed 's/^/    /' "$path"
+    echo
+  fi
+}
+
+edit_config_file() {
+  local path="$1"
+  echo
+  echo -e "  ${DIM}▸ Editing $path${RESET}"
+  echo -e "  ${DIM}  (set EDITOR or VISUAL; else sensible-editor / nano / vi)${RESET}\n"
+  if command -v sensible-editor &>/dev/null; then
+    sensible-editor "$path"
+  elif [[ -n "${VISUAL:-}" ]]; then
+    # shellcheck disable=SC2086
+    $VISUAL "$path"
+  elif [[ -n "${EDITOR:-}" ]]; then
+    # shellcheck disable=SC2086
+    $EDITOR "$path"
+  elif command -v nano &>/dev/null; then
+    nano "$path"
+  else
+    vi "$path"
+  fi
+}
+
+manage_site_configs() {
+  while true; do
+    print_header
+    echo -e "  ${BOLD}View / edit site configs${RESET}"
+    echo -e "  ${DIM}────────────────────────────────────────────────${RESET}"
+    echo
+    echo -e "  ${DIM}Files in $SITES_AVAILABLE${RESET}"
+    echo
+
+    local names=()
+    collect_site_config_names names
+
+    if [[ ${#names[@]} -eq 0 ]]; then
+      echo -e "  ${DIM}No config files found.${RESET}"
+      pause
+      return
+    fi
+
+    local i badge
+    for i in "${!names[@]}"; do
+      if [[ -L "$SITES_ENABLED/${names[$i]}" ]]; then
+        badge="${GREEN}● enabled${RESET}"
+      else
+        badge="${RED}○ disabled${RESET}"
+      fi
+      echo -e "  ${CYAN}[$((i + 1))]${RESET}  ${names[$i]}  $(echo -e "$badge")"
+    done
+    echo
+    echo -e "  ${DIM}[b]${RESET}  Back to main menu"
+    echo
+
+    read -rp "  Select config number: " choice
+    case "$choice" in
+      b|B) return ;;
+    esac
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#names[@]} )); then
+      echo -e "  ${RED}Invalid choice${RESET}"
+      sleep 1
+      continue
+    fi
+
+    local site="${names[$((choice - 1))]}"
+    local cfg="$SITES_AVAILABLE/$site"
+
+    while true; do
+      print_header
+      echo -e "  ${BOLD}Config:${RESET}  $site"
+      echo -e "  ${DIM}$cfg${RESET}"
+      echo
+      echo -e "  ${CYAN}[1]${RESET}  View in pager  ${DIM}(less / more)${RESET}"
+      echo -e "  ${CYAN}[2]${RESET}  Edit in editor  ${DIM}(EDITOR / nano / vi)${RESET}"
+      echo -e "  ${CYAN}[3]${RESET}  Test only       ${DIM}(nginx -t)${RESET}"
+      echo -e "  ${CYAN}[4]${RESET}  Test & reload nginx"
+      echo -e "  ${DIM}[b]${RESET}  Pick another config"
+      echo
+
+      read -rp "  Choose: " act
+      case "$act" in
+        1) view_config_file "$cfg"; pause ;;
+        2) edit_config_file "$cfg"; pause ;;
+        3) nginx_check; ;;
+        4) nginx_reload; pause ;;
+        b|B) break ;;
+        *) ;;
+      esac
+    done
+  done
 }
 
 # ────────────────────────────────────────────────────────
@@ -651,6 +775,7 @@ main_menu() {
     echo -e "  ${CYAN}[3]${RESET}  Disable a site"
     echo -e "  ${CYAN}[4]${RESET}  Add new site config"
     echo -e "  ${CYAN}[5]${RESET}  Delete a site config"
+    echo -e "  ${CYAN}[6]${RESET}  View / edit site config  ${DIM}(pager + editor)${RESET}"
 
     local db_status badge
     db_status=$(default_block_status)
@@ -659,11 +784,11 @@ main_menu() {
       disabled) badge="${YELLOW}○ inactive${RESET}" ;;
       *)        badge="${RED}✗ not installed${RESET}" ;;
     esac
-    echo -e "  ${CYAN}[6]${RESET}  Default drop block       $(echo -e "$badge")"
+    echo -e "  ${CYAN}[7]${RESET}  Default drop block       $(echo -e "$badge")"
 
     echo -e "  ${DIM}  ─────────────────────────────────${RESET}"
-    echo -e "  ${CYAN}[7]${RESET}  Test config  ${DIM}(nginx -t)${RESET}"
-    echo -e "  ${CYAN}[8]${RESET}  Restart nginx  ${DIM}(systemctl restart)${RESET}"
+    echo -e "  ${CYAN}[8]${RESET}  Test config  ${DIM}(nginx -t)${RESET}"
+    echo -e "  ${CYAN}[9]${RESET}  Restart nginx  ${DIM}(systemctl restart)${RESET}"
     echo
     echo -e "  ${DIM}[q]${RESET}  Quit"
     echo
@@ -675,9 +800,10 @@ main_menu() {
       3) disable_site ;;
       4) add_site ;;
       5) delete_site ;;
-      6) manage_default_block ;;
-      7) nginx_check ;;
-      8) nginx_restart ;;
+      6) manage_site_configs ;;
+      7) manage_default_block ;;
+      8) nginx_check ;;
+      9) nginx_restart ;;
       q|Q) echo -e "\n  ${DIM}Bye!${RESET}\n"; exit 0 ;;
       *) echo -e "  ${RED}Unknown option${RESET}"; sleep 1 ;;
     esac
