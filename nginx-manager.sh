@@ -20,11 +20,8 @@ RESET='\033[0m'
 # Raw URL for self-update (override: NGINX_MANAGER_UPDATE_URL='https://.../raw/.../nginx-manager.sh')
 SELF_UPDATE_URL="${NGINX_MANAGER_UPDATE_URL:-https://raw.githubusercontent.com/DmitryAce/scripts/main/nginx-manager.sh}"
 
-# Short aliases nm / dm → drop-ins in profile.d (Settings menu)
-ALIAS_NM_DROPIN="/etc/profile.d/nginx-manager-alias-nm.sh"
-ALIAS_DM_DROPIN="/etc/profile.d/docker-manager-alias-dm.sh"
-# Одна строка-маркер для grep (хук в интерактивный bash)
-BASH_ALIASES_HOOK_MARKER='# >>> devops-managers-aliases (nginx/docker Settings)'
+SHORTCUT_NXM="/usr/local/bin/nxm"
+SHORTCUT_DM="/usr/local/bin/dm"
 
 # ────────────────────────────────────────────────────────
 #  UTILITIES
@@ -831,207 +828,115 @@ nginx_restart() {
 }
 
 # ────────────────────────────────────────────────────────
-#  SETTINGS (aliases nm / dm)
+#  SETTINGS (symlinks nxm / dm)
 # ────────────────────────────────────────────────────────
 
 resolve_nginx_manager_bin() {
-  command -v nginx-manager 2>/dev/null || echo "/usr/local/bin/nginx-manager"
+  local p
+  p=$(command -v nginx-manager 2>/dev/null) && { echo "$p"; return; }
+  echo "/usr/local/bin/nginx-manager"
 }
 
 resolve_docker_manager_bin() {
-  command -v docker-manager 2>/dev/null || echo "/usr/local/bin/docker-manager"
+  local p
+  p=$(command -v docker-manager 2>/dev/null) && { echo "$p"; return; }
+  echo "/usr/local/bin/docker-manager"
 }
 
-alias_nm_enabled() { [[ -f "$ALIAS_NM_DROPIN" ]]; }
-alias_dm_enabled() { [[ -f "$ALIAS_DM_DROPIN" ]]; }
+shortcut_nxm_enabled() {
+  [[ -L "$SHORTCUT_NXM" ]]
+}
 
-warn_path_conflict_shortcmd() {
+shortcut_dm_enabled() {
+  [[ -L "$SHORTCUT_DM" ]]
+}
+
+warn_conflict() {
   local short="$1"
   local p
   p=$(command -v -- "$short" 2>/dev/null || true)
   [[ -z "$p" ]] && return 0
-  case "$short" in
-    nm)
-      [[ "$p" == *nginx-manager* ]] && return 0
-      echo -e "  ${YELLOW}⚠  В PATH уже есть команда «nm»:${RESET} ${BOLD}$p${RESET}"
-      echo -e "  ${DIM}  Обычно это binutils (символы объектных файлов). После входа в bash алиас перекроет имя.${RESET}"
-      ;;
-    dm)
-      [[ "$p" == *docker-manager* ]] && return 0
-      echo -e "  ${YELLOW}⚠  В системе уже есть «dm»:${RESET} ${BOLD}$p${RESET}"
-      echo -e "  ${DIM}  Интерактивный алиас в bash может перекрыть это имя.${RESET}"
-      ;;
-  esac
+  [[ "$p" == "$SHORTCUT_NXM" || "$p" == "$SHORTCUT_DM" ]] && return 0
+  echo -e "  ${YELLOW}⚠  «${short}» уже занято:${RESET} ${BOLD}$p${RESET}"
+  return 1
 }
 
-warn_other_profiled_alias() {
-  local short="$1"
-  local f b
-  for f in /etc/profile.d/*.sh; do
-    [[ -f "$f" ]] || continue
-    b=$(basename "$f")
-    [[ "$b" == "nginx-manager-alias-nm.sh" || "$b" == "docker-manager-alias-dm.sh" ]] && continue
-    if grep -qE "^[[:space:]]*alias[[:space:]]+${short}=" "$f" 2>/dev/null; then
-      echo -e "  ${YELLOW}⚠  Обнаружен alias ${short} ещё в:${RESET} $f"
-    fi
-  done
+_create_symlink() {
+  local link="$1" target="$2"
+  ln -sf "$target" "$link" 2>/dev/null && return 0
+  echo -e "  ${RED}✗ Не удалось создать $link → $target${RESET}"
+  return 1
 }
 
-_write_alias_dropin() {
-  local dest="$1" name="$2" bin="$3"
-  local tmp
-  tmp=$(mktemp) || return 1
-  {
-    echo "# Managed by nginx-manager / docker-manager (Settings) — do not edit by hand"
-    echo "# Подхват: login-shell, source $dest, или хук в /etc/bash.bashrc (интерактивный bash)"
-    printf 'alias %s=%q\n' "$name" "$bin"
-  } > "$tmp" || { rm -f "$tmp"; return 1; }
-  if [[ $EUID -eq 0 ]]; then
-    install -m 644 "$tmp" "$dest" || { rm -f "$tmp"; echo -e "  ${RED}✗ Не удалось записать $dest${RESET}"; return 1; }
-  else
-    sudo install -m 644 "$tmp" "$dest" || { rm -f "$tmp"; echo -e "  ${RED}✗ sudo / запись не удалась${RESET}"; return 1; }
-  fi
-  rm -f "$tmp"
-  return 0
+_remove_symlink() {
+  local link="$1"
+  rm -f "$link" 2>/dev/null && return 0
+  echo -e "  ${RED}✗ Не удалось удалить $link${RESET}"
+  return 1
 }
 
-_remove_alias_dropin() {
-  local dest="$1"
-  if [[ $EUID -eq 0 ]]; then
-    rm -f "$dest" || { echo -e "  ${RED}✗ Не удалось удалить $dest${RESET}"; return 1; }
-  else
-    sudo rm -f "$dest" || { echo -e "  ${RED}✗ Не удалось удалить (sudo?)${RESET}"; return 1; }
-  fi
-}
-
-# Интерактивный bash часто не читает /etc/profile.d (non-login). Дописываем блок в bash.bashrc / bashrc.
-# 0 — блок только что добавлен; 1 — маркер уже есть в bash.bashrc или bashrc; 2 — нет обоих файлов; 3 — ошибка записи.
-_ensure_interactive_bash_hook() {
-  local target=""
-  [[ -f /etc/bash.bashrc ]] && target=/etc/bash.bashrc
-  [[ -z "$target" && -f /etc/bashrc ]] && target=/etc/bashrc
-  [[ -z "$target" ]] && return 2
-
-  if grep -qF "$BASH_ALIASES_HOOK_MARKER" /etc/bash.bashrc 2>/dev/null || \
-     grep -qF "$BASH_ALIASES_HOOK_MARKER" /etc/bashrc 2>/dev/null; then
-    return 1
-  fi
-
-  local block=$'\n'"$BASH_ALIASES_HOOK_MARKER"$'\n'"[[ -r $ALIAS_NM_DROPIN ]] && . $ALIAS_NM_DROPIN"$'\n'"[[ -r $ALIAS_DM_DROPIN ]] && . $ALIAS_DM_DROPIN"$'\n'"# <<< devops-managers-aliases"$'\n'
-
-  if [[ $EUID -eq 0 ]]; then
-    printf '%s' "$block" >> "$target" || return 3
-  else
-    printf '%s' "$block" | sudo tee -a "$target" > /dev/null || return 3
-  fi
-  return 0
-}
-
-toggle_nm_alias() {
-  if alias_nm_enabled; then
-    if confirm "Выключить алиас nm (удалить $ALIAS_NM_DROPIN)?"; then
-      _remove_alias_dropin "$ALIAS_NM_DROPIN" && echo -e "  ${GREEN}✓ nm выключен${RESET}"
+toggle_nxm() {
+  if shortcut_nxm_enabled; then
+    if confirm "Удалить симлинк nxm?"; then
+      _remove_symlink "$SHORTCUT_NXM" && echo -e "  ${GREEN}✓ nxm удалён${RESET}"
     fi
   else
-    warn_path_conflict_shortcmd nm
-    warn_other_profiled_alias nm
+    warn_conflict nxm || true
     local bin
     bin=$(resolve_nginx_manager_bin)
-    [[ ! -f "$bin" ]] && echo -e "  ${YELLOW}⚠  Нет файла: $bin (алиас всё равно будет записан)${RESET}"
-    echo -e "  ${DIM}Будет: nm → $bin${RESET}"
-    if confirm "Включить алиас nm?"; then
-      if _write_alias_dropin "$ALIAS_NM_DROPIN" "nm" "$bin"; then
-        echo -e "  ${GREEN}✓ nm включён${RESET}"
-        if _ensure_interactive_bash_hook; then
-          echo -e "  ${GREEN}✓ Добавлен хук в /etc/bash.bashrc или /etc/bashrc (интерактивный bash)${RESET}"
-        fi
-        echo -e "  ${DIM}В этой консоли сейчас: ${BOLD}exec bash${RESET}${DIM} или ${BOLD}source $ALIAS_NM_DROPIN${RESET}"
-      fi
+    echo -e "  ${DIM}Будет: $SHORTCUT_NXM → $bin${RESET}"
+    if confirm "Создать симлинк nxm?"; then
+      _create_symlink "$SHORTCUT_NXM" "$bin" && echo -e "  ${GREEN}✓ nxm создан — работает сразу${RESET}"
     fi
   fi
 }
 
-toggle_dm_alias() {
-  if alias_dm_enabled; then
-    if confirm "Выключить алиас dm (удалить $ALIAS_DM_DROPIN)?"; then
-      _remove_alias_dropin "$ALIAS_DM_DROPIN" && echo -e "  ${GREEN}✓ dm выключен${RESET}"
+toggle_dm() {
+  if shortcut_dm_enabled; then
+    if confirm "Удалить симлинк dm?"; then
+      _remove_symlink "$SHORTCUT_DM" && echo -e "  ${GREEN}✓ dm удалён${RESET}"
     fi
   else
-    warn_path_conflict_shortcmd dm
-    warn_other_profiled_alias dm
+    warn_conflict dm || true
     local bin
     bin=$(resolve_docker_manager_bin)
-    [[ ! -f "$bin" ]] && echo -e "  ${YELLOW}⚠  Нет файла: $bin${RESET}"
-    echo -e "  ${DIM}Будет: dm → $bin${RESET}"
-    if confirm "Включить алиас dm?"; then
-      if _write_alias_dropin "$ALIAS_DM_DROPIN" "dm" "$bin"; then
-        echo -e "  ${GREEN}✓ dm включён${RESET}"
-        if _ensure_interactive_bash_hook; then
-          echo -e "  ${GREEN}✓ Добавлен хук в /etc/bash.bashrc или /etc/bashrc (интерактивный bash)${RESET}"
-        fi
-        echo -e "  ${DIM}В этой консоли: ${BOLD}exec bash${RESET}${DIM} или ${BOLD}source $ALIAS_DM_DROPIN${RESET}"
-      fi
+    echo -e "  ${DIM}Будет: $SHORTCUT_DM → $bin${RESET}"
+    if confirm "Создать симлинк dm?"; then
+      _create_symlink "$SHORTCUT_DM" "$bin" && echo -e "  ${GREEN}✓ dm создан — работает сразу${RESET}"
     fi
   fi
 }
 
 settings_menu() {
-  local _bash_hook_just_added=0
-  if alias_nm_enabled || alias_dm_enabled; then
-    if _ensure_interactive_bash_hook; then
-      _bash_hook_just_added=1
-    fi
-  fi
-
   while true; do
     print_header
     echo -e "  ${BOLD}Settings${RESET}"
     echo -e "  ${DIM}────────────────────────────────────────────────${RESET}"
-    if [[ $_bash_hook_just_added -eq 1 ]]; then
-      echo -e "  ${GREEN}✓ В системный bashrc добавлен блок подхвата nm/dm.${RESET}"
-      echo -e "  ${YELLOW}Текущая сессия без алиасов:${RESET} ${BOLD}exec bash${RESET} или откройте новый SSH.\n"
-      _bash_hook_just_added=0
+    echo -e "  ${DIM}Симлинки в /usr/local/bin — работают сразу, в любой оболочке.${RESET}"
+    echo
+    local nxm_st dm_st
+    if shortcut_nxm_enabled; then
+      nxm_st="${GREEN}${BOLD}● активен${RESET}  ${DIM}→ $(readlink -f "$SHORTCUT_NXM" 2>/dev/null)${RESET}"
+    else
+      nxm_st="${RED}○ выключен${RESET}"
     fi
-    echo -e "  ${DIM}Файлы в /etc/profile.d + хук в bash.bashrc (интерактивный non-login bash).${RESET}"
-    echo -e "  ${DIM}nginx-manager от root — без sudo.${RESET}"
-    echo -e "  ${DIM}Сразу в этой консоли:${RESET} ${BOLD}source $ALIAS_NM_DROPIN${RESET} ${DIM}и${RESET} ${BOLD}source $ALIAS_DM_DROPIN${RESET}"
+    if shortcut_dm_enabled; then
+      dm_st="${GREEN}${BOLD}● активен${RESET}  ${DIM}→ $(readlink -f "$SHORTCUT_DM" 2>/dev/null)${RESET}"
+    else
+      dm_st="${RED}○ выключен${RESET}"
+    fi
+    echo -e "  nxm  ${DIM}(nginx-manager)${RESET}     $(echo -e "$nxm_st")"
+    echo -e "  dm   ${DIM}(docker-manager)${RESET}    $(echo -e "$dm_st")"
     echo
-    local nm_st dm_st
-    if alias_nm_enabled; then nm_st="${GREEN}${BOLD}● активен${RESET}"; else nm_st="${RED}○ выключен${RESET}"; fi
-    if alias_dm_enabled; then dm_st="${GREEN}${BOLD}● активен${RESET}"; else dm_st="${RED}○ выключен${RESET}"; fi
-    echo -e "  nm → nginx-manager     $(echo -e "$nm_st")"
-    echo -e "    ${DIM}$ALIAS_NM_DROPIN${RESET}"
-    echo
-    echo -e "  dm → docker-manager    $(echo -e "$dm_st")"
-    echo -e "    ${DIM}$ALIAS_DM_DROPIN${RESET}"
-    echo
-    echo -e "  ${CYAN}[1]${RESET}  Переключить  nm"
+    echo -e "  ${CYAN}[1]${RESET}  Переключить  nxm"
     echo -e "  ${CYAN}[2]${RESET}  Переключить  dm"
-    echo -e "  ${CYAN}[3]${RESET}  Установить хук в bashrc  ${DIM}(если nm/dm не видны в консоли)${RESET}"
-    echo -e "  ${DIM}[b]${RESET}  Назад в главное меню"
+    echo -e "  ${DIM}[b]${RESET}  Назад"
     echo
 
     read -rp "  Choose: " sopt
     case "$sopt" in
-      1) toggle_nm_alias; pause ;;
-      2) toggle_dm_alias; pause ;;
-      3)
-        if alias_nm_enabled || alias_dm_enabled; then
-          _ensure_interactive_bash_hook
-          case $? in
-            0) echo -e "  ${GREEN}✓ Хук дописан в bashrc. Дальше: ${BOLD}exec bash${RESET}${GREEN} или новый SSH.${RESET}" ;;
-            1)
-              echo -e "  ${GREEN}✓ Хук уже есть${RESET} ${DIM}(маркер devops-managers-aliases в /etc/bash.bashrc или /etc/bashrc)${RESET}"
-              echo -e "  ${DIM}Если nm/dm не срабатывают: вы в ${BOLD}bash${RESET}${DIM}? (${BOLD}echo \"\$0\"${RESET}${DIM}) Запустите ${BOLD}exec bash${RESET}${DIM} или ${BOLD}bash -l${RESET}${DIM}.${RESET}"
-              ;;
-            2) echo -e "  ${RED}✗ Нет файлов /etc/bash.bashrc и /etc/bashrc — хук некуда записать.${RESET}" ;;
-            3) echo -e "  ${RED}✗ Не удалось дописать bashrc (права / диск).${RESET}" ;;
-          esac
-        else
-          echo -e "  ${YELLOW}Сначала включите nm или dm${RESET}"
-        fi
-        pause
-        ;;
+      1) toggle_nxm; pause ;;
+      2) toggle_dm; pause ;;
       b|B) return ;;
       *) ;;
     esac
@@ -1066,7 +971,7 @@ main_menu() {
     echo -e "  ${CYAN}[8]${RESET}  Test config  ${DIM}(nginx -t)${RESET}"
     echo -e "  ${CYAN}[9]${RESET}  Restart nginx  ${DIM}(systemctl restart)${RESET}"
     echo
-    echo -e "  ${CYAN}[s]${RESET}  Settings  ${DIM}(алиасы nm / dm)${RESET}"
+    echo -e "  ${CYAN}[s]${RESET}  Settings  ${DIM}(nxm / dm)${RESET}"
     echo -e "  ${DIM}[q]${RESET}  Quit"
     echo
 
