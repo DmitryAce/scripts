@@ -17,12 +17,65 @@ BOLD='\033[1m'
 DIM='\033[2m'
 RESET='\033[0m'
 
+# Raw URL for self-update (same as README install)
+SELF_UPDATE_URL="https://raw.githubusercontent.com/DmitryAce/scripts/main/nginx-manager.sh"
+
 # ────────────────────────────────────────────────────────
 #  UTILITIES
 # ────────────────────────────────────────────────────────
 
 require_root() {
   [[ $EUID -ne 0 ]] && { echo -e "${RED}Run as root (sudo)${RESET}"; exit 1; }
+}
+
+resolve_this_script_path() {
+  local s="${BASH_SOURCE[0]}"
+  if [[ "$s" != */* ]]; then
+    s=$(command -v -- "$s" 2>/dev/null || command -v -- "${0##*/}" 2>/dev/null || printf '%s' "$s")
+  fi
+  if readlink -f "$s" &>/dev/null; then
+    readlink -f "$s"
+  elif command -v realpath &>/dev/null && realpath "$s" &>/dev/null; then
+    realpath "$s"
+  else
+    echo "$(cd "$(dirname "$s")" && pwd)/$(basename "$s")"
+  fi
+}
+
+self_update() {
+  local dest tmp
+  dest=$(resolve_this_script_path)
+
+  if ! command -v curl &>/dev/null; then
+    echo -e "${RED}curl not found — install curl${RESET}"
+    return 1
+  fi
+
+  echo -e "  ${CYAN}Self-update${RESET} → ${DIM}$dest${RESET}"
+  echo -e "  ${DIM}▸ $SELF_UPDATE_URL${RESET}\n"
+
+  tmp=$(mktemp) || return 1
+  if ! curl -fsSL "$SELF_UPDATE_URL" -o "$tmp"; then
+    rm -f "$tmp"
+    echo -e "  ${RED}✗ Download failed (network / URL)${RESET}"
+    return 1
+  fi
+
+  if ! head -1 "$tmp" | grep -q '^#!/bin/bash'; then
+    rm -f "$tmp"
+    echo -e "  ${RED}✗ File is not a bash script — wrong URL?${RESET}"
+    return 1
+  fi
+
+  chmod +x "$tmp"
+  if ! install -m 755 "$tmp" "$dest"; then
+    rm -f "$tmp"
+    echo -e "  ${RED}✗ Cannot write $dest${RESET}"
+    return 1
+  fi
+  rm -f "$tmp"
+  echo -e "\n  ${GREEN}✓ Updated${RESET}  ${DIM}Run again: nginx-manager${RESET}\n"
+  return 0
 }
 
 print_header() {
@@ -818,6 +871,12 @@ main_menu() {
     esac
   done
 }
+
+if [[ "${1:-}" == "update" ]]; then
+  require_root
+  self_update || exit 1
+  exit 0
+fi
 
 require_root
 main_menu
