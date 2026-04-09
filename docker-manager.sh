@@ -11,7 +11,10 @@ BOLD='\033[1m'
 DIM='\033[2m'
 RESET='\033[0m'
 
-SELF_UPDATE_URL="https://raw.githubusercontent.com/DmitryAce/scripts/main/docker-manager.sh"
+# По умолчанию GitHub; если пушите только в GitLab — один раз поставьте скрипт вручную, затем:
+#   export DOCKER_MANAGER_UPDATE_URL='https://gitlab.com/GROUP/PROJECT/-/raw/main/scripts/docker-manager/docker-manager.sh'
+#   docker-manager update
+SELF_UPDATE_URL="${DOCKER_MANAGER_UPDATE_URL:-https://raw.githubusercontent.com/DmitryAce/scripts/main/docker-manager.sh}"
 
 # ────────────────────────────────────────────────────────
 #  UTILITIES
