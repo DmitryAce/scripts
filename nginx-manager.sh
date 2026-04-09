@@ -366,11 +366,20 @@ collect_site_config_names() {
 view_config_file() {
   local path="$1"
   echo
-  echo -e "  ${DIM}▸ $path${RESET} ${DIM}(q to quit pager)${RESET}\n"
+  echo -e "  ${BOLD}Просмотр файла${RESET}  ${DIM}$path${RESET}"
+  echo -e "  ${YELLOW}────────────────────────────────────────────────${RESET}"
+  echo -e "  ${GREEN}q${RESET}  — выйти в меню (в любой момент)"
+  echo -e "  ${GREEN}Esc${RESET} — если внизу появилось «${BOLD}:${RESET}», сначала Esc, потом ${GREEN}q${RESET}"
+  echo -e "  ${DIM}↑/↓  PgUp/PgDn — листать · дошли до конца — снова ${GREEN}q${RESET} или выход автоматически${RESET}"
+  echo -e "  ${YELLOW}────────────────────────────────────────────────${RESET}"
+  echo
   if command -v less &>/dev/null; then
-    less -F -X "$path"
+    # -E: выход при первом достижении конца файла (не «зависать» на END)
+    # -X: не чистить весь экран после выхода — удобнее вернуться в меню
+    command less -E -X "$path"
   elif command -v more &>/dev/null; then
-    more "$path"
+    echo -e "  ${DIM}more: пробел — далее, q — выход${RESET}\n"
+    command more "$path"
   else
     sed 's/^/    /' "$path"
     echo
